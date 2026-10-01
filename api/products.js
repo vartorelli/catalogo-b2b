@@ -1,7 +1,7 @@
 const STORE_API = 'https://isabellamayorista.com.ar/wp-json/wc/store/v1';
 const WC_API = 'https://isabellamayorista.com.ar/wp-json/wc/v3';
 const CACHE_TTL = 5 * 60 * 1000;
-const FILTER_PAGE_CONCURRENCY = 5;
+const FILTER_CACHE_TTL = 60 * 60 * 1000;
 const responseCache = new Map();
 const variationCache = new Map();
 
@@ -26,7 +26,9 @@ export default async function handler(request, response) {
   const cacheKey = `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}${url.search}`;
   const cachedResponse = responseCache.get(cacheKey);
   if (cachedResponse && cachedResponse.expiresAt > Date.now()) {
-    response.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+    response.setHeader('Cache-Control', requestedResource === 'filters'
+      ? 's-maxage=3600, stale-while-revalidate=86400'
+      : 's-maxage=300, stale-while-revalidate=600');
     Object.entries(cachedResponse.headers).forEach(([name, value]) => response.setHeader(name, value));
     response.status(200).json(cachedResponse.data);
     return;
@@ -42,12 +44,8 @@ export default async function handler(request, response) {
     }
     const filterProducts = await filterResponse.json();
     const totalPages = Math.max(1, Number(filterResponse.headers.get('x-wp-totalpages')) || 1);
-    for (let firstPage = 2; firstPage <= totalPages; firstPage += FILTER_PAGE_CONCURRENCY) {
-      const pages = Array.from(
-        { length: Math.min(FILTER_PAGE_CONCURRENCY, totalPages - firstPage + 1) },
-        (_, index) => firstPage + index,
-      );
-      const pageResponses = await Promise.all(pages.map((page) => {
+    if (totalPages > 1) {
+      const pageResponses = await Promise.all(Array.from({ length: totalPages - 1 }, (_, index) => index + 2).map((page) => {
         const params = new URLSearchParams(filterParams);
         params.set('page', String(page));
         return fetch(`${apiBase}/products?${params}`, { headers });
@@ -60,7 +58,7 @@ export default async function handler(request, response) {
       const pageProducts = await Promise.all(pageResponses.map((pageResponse) => pageResponse.json()));
       filterProducts.push(...pageProducts.flat());
     }
-    response.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+    response.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
     const attributeValues = new Map();
     filterProducts.forEach(({ attributes = [] }) => {
       attributes.forEach(({ name, terms = [], options = [] }) => {
@@ -74,7 +72,7 @@ export default async function handler(request, response) {
     const result = [{
       attributes: [...attributeValues].map(([name, values]) => ({ name, terms: [...values.values()] })),
     }];
-    responseCache.set(cacheKey, { data: result, headers: {}, expiresAt: Date.now() + CACHE_TTL });
+    responseCache.set(cacheKey, { data: result, headers: {}, expiresAt: Date.now() + FILTER_CACHE_TTL });
     response.status(200).json(result);
     return;
   }

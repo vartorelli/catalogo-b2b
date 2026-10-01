@@ -93,6 +93,14 @@ function renderPagination() {
 
 async function loadProducts() {
   const requestId = ++productsRequestId;
+  const filterCategory = state.category;
+  updateAttributeFilters().catch((error) => {
+    console.error('No se pudieron cargar los filtros de producto', error);
+    if (filterCategory !== state.category) return;
+    $('#filter-status span').textContent = 'No se pudieron cargar los filtros. Podés volver a intentarlo.';
+    $('#retry-filters').hidden = false;
+    $('#filter-status').hidden = false;
+  });
   $('#status').textContent = 'Cargando catálogo...';
   $('#status').hidden = false;
   const params = { page: state.page, per_page: 16 };
@@ -111,9 +119,6 @@ async function loadProducts() {
     $('#result-count').textContent = `${response.headers.get('X-WP-Total') || products.length} productos`;
     renderProducts(products.filter((product) => product.is_in_stock));
     renderPagination();
-    updateAttributeFilters().catch((error) => {
-      console.error('No se pudieron cargar los filtros de producto', error);
-    });
   } catch (error) {
     if (requestId !== productsRequestId) return;
     $('#status').textContent = 'No se pudo cargar el catálogo. Intentá nuevamente en unos minutos.';
@@ -134,6 +139,9 @@ function updateOrder(product, rawQuantity, options = '', variationId = '') {
 async function updateAttributeFilters() {
   const category = state.category;
   const cacheKey = String(category);
+  $('#filter-status span').textContent = 'Cargando filtros...';
+  $('#retry-filters').hidden = true;
+  $('#filter-status').hidden = false;
   let productsPromise = attributeFilterCache.get(cacheKey);
   if (!productsPromise) {
     productsPromise = fetch(apiUrl({ resource: 'filters', category }))
@@ -158,6 +166,7 @@ async function updateAttributeFilters() {
     select.innerHTML = `<option value="">${name === 'Marca' ? 'Todas las marcas' : name === 'Talle' ? 'Todos los talles' : 'Todos los colores'}</option>${[...values].sort((a, b) => a[1].localeCompare(b[1], 'es')).map(([slug, label]) => `<option value="${slug}">${label}</option>`).join('')}`;
     select.value = selected;
   });
+  $('#filter-status').hidden = true;
 }
 
 function openOptions(product) {
@@ -347,6 +356,15 @@ $('#search-clear').addEventListener('click', () => {
   state.page = 1;
   loadProducts();
   $('#search').focus();
+});
+$('#retry-filters').addEventListener('click', () => {
+  attributeFilterCache.delete(String(state.category));
+  updateAttributeFilters().catch((error) => {
+    console.error('No se pudieron cargar los filtros de producto', error);
+    $('#filter-status span').textContent = 'No se pudieron cargar los filtros. Podés volver a intentarlo.';
+    $('#retry-filters').hidden = false;
+    $('#filter-status').hidden = false;
+  });
 });
 [['brand-filter', 'brand'], ['size-filter', 'size'], ['color-filter', 'color']].forEach(([id, key]) => $(`#${id}`).addEventListener('change', (event) => {
   state[key] = event.target.value;

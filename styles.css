@@ -183,6 +183,30 @@ h2 {
   font: inherit;
   color: var(--ink);
 }
+.filter-status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 10px;
+  margin: -12px 0 22px;
+  min-height: 18px;
+}
+.filter-status[hidden],
+.filter-status button[hidden] {
+  display: none;
+}
+.filter-status button {
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  padding: 5px 9px;
+}
+.filter-status button:hover {
+  background: #eeecea;
+}
 .search-wrap {
   position: relative;
   flex: 1;
