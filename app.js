@@ -2,6 +2,7 @@ const state = { page: 1, category: 0, search: '', brand: '', size: '', color: ''
 const $ = (selector) => document.querySelector(selector);
 const apiUrl = (params) => `/api/products?${new URLSearchParams(params)}`;
 const attributeFilterCache = new Map();
+let filterRefreshPromise;
 let productsRequestId = 0;
 
 function cleanText(value = '') {
@@ -144,9 +145,9 @@ async function updateAttributeFilters() {
   $('#filter-status').hidden = false;
   let productsPromise = attributeFilterCache.get(cacheKey);
   if (!productsPromise) {
-    productsPromise = fetch(apiUrl({ resource: 'filters' }))
+    productsPromise = fetch('./filter-options.json')
       .then((response) => {
-        if (!response.ok) throw new Error('Error al consultar los atributos del catálogo');
+        if (!response.ok) throw new Error(`No se pudo cargar la caché de filtros (HTTP ${response.status})`);
         return response.json();
       });
     attributeFilterCache.set(cacheKey, productsPromise);
@@ -159,6 +160,12 @@ async function updateAttributeFilters() {
     throw error;
   }
   if (category !== state.category) return;
+  renderAttributeFilters(products);
+  $('#filter-status').hidden = true;
+  refreshAttributeFilters();
+}
+
+function renderAttributeFilters(products) {
   [['brand-filter', 'Marca', state.brand], ['size-filter', 'Talle', state.size], ['color-filter', 'Color', state.color]].forEach(([id, name, selected]) => {
     const select = $(`#${id}`);
     const values = new Map();
@@ -166,7 +173,27 @@ async function updateAttributeFilters() {
     select.innerHTML = `<option value="">${name === 'Marca' ? 'Todas las marcas' : name === 'Talle' ? 'Todos los talles' : 'Todos los colores'}</option>${[...values].sort((a, b) => a[1].localeCompare(b[1], 'es')).map(([slug, label]) => `<option value="${slug}">${label}</option>`).join('')}`;
     select.value = selected;
   });
-  $('#filter-status').hidden = true;
+}
+
+function refreshAttributeFilters() {
+  if (filterRefreshPromise) return;
+  filterRefreshPromise = fetch(apiUrl({ resource: 'filters' }))
+    .then((response) => {
+      if (!response.ok) throw new Error(`Error al actualizar los filtros (HTTP ${response.status})`);
+      return response.json();
+    })
+    .then((products) => {
+      attributeFilterCache.set('global', Promise.resolve(products));
+      renderAttributeFilters(products);
+      $('#filter-status').hidden = true;
+    })
+    .catch((error) => {
+      filterRefreshPromise = undefined;
+      console.error('No se pudieron actualizar los filtros guardados', error);
+      $('#filter-status span').textContent = 'Usando filtros guardados; no se pudieron actualizar.';
+      $('#retry-filters').hidden = false;
+      $('#filter-status').hidden = false;
+    });
 }
 
 function openOptions(product) {
@@ -359,6 +386,7 @@ $('#search-clear').addEventListener('click', () => {
 });
 $('#retry-filters').addEventListener('click', () => {
   attributeFilterCache.delete('global');
+  filterRefreshPromise = undefined;
   updateAttributeFilters().catch((error) => {
     console.error('No se pudieron cargar los filtros de producto', error);
     $('#filter-status span').textContent = 'No se pudieron cargar los filtros. Podés volver a intentarlo.';
