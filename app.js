@@ -171,18 +171,38 @@ function renderAttributeFilters(index) {
     const select = $(`#${id}`);
     const selectedLabel = [...select.options].find((option) => option.value === selected)?.textContent;
     const values = new Map();
+    const selectedFilters = filters.filter((filter) => filter.key !== key && filter.selected);
     const matchingProducts = products.filter((product) =>
       (!state.category || product.categories.includes(state.category))
       && (!state.search || product.search.includes(state.search.trim().toLocaleLowerCase('es')))
-      && filters.every((filter) => filter.key === key || !filter.selected
-        || product.attributes[filter.key]?.includes(filter.selected)));
+      && matchesAvailableOptions(product, selectedFilters));
     matchingProducts.forEach((product) => {
-      (product.attributes[key] || []).forEach((slug) => values.set(slug, index.terms[key][slug] || slug));
+      const availableValues = product.combinations && (key === 'size' || key === 'color')
+        ? product.combinations
+          .filter((combination) => selectedFilters
+            .filter((filter) => filter.key === 'size' || filter.key === 'color')
+            .every((filter) => combination[filter.key] === filter.selected))
+          .map((combination) => combination[key])
+          .filter(Boolean)
+        : product.attributes[key] || [];
+      availableValues.forEach((slug) => values.set(slug, index.terms[key][slug] || slug));
     });
     if (selected && !values.has(selected)) values.set(selected, selectedLabel || selected);
     select.innerHTML = `<option value="">${name === 'Marca' ? 'Todas las marcas' : name === 'Talle' ? 'Todos los talles' : 'Todos los colores'}</option>${[...values].sort((a, b) => a[1].localeCompare(b[1], 'es')).map(([slug, label]) => `<option value="${slug}">${label}</option>`).join('')}`;
     select.value = selected;
   });
+}
+
+function matchesAvailableOptions(product, filters) {
+  const attributeFilters = filters.filter((filter) => filter.key === 'brand');
+  if (!attributeFilters.every((filter) => product.attributes.brand?.includes(filter.selected))) return false;
+  const variationFilters = filters.filter((filter) => filter.key === 'size' || filter.key === 'color');
+  if (variationFilters.length === 0) return true;
+  if (!product.combinations) {
+    return variationFilters.every((filter) => product.attributes[filter.key]?.includes(filter.selected));
+  }
+  return product.combinations.some((combination) => variationFilters.every((filter) =>
+    combination[filter.key] === filter.selected));
 }
 
 async function openOptions(product) {
@@ -212,7 +232,10 @@ async function openOptions(product) {
     const name = normalizeName(attribute.name);
     if (!['talle', 'color'].includes(name)) return;
     if (!optionValues.has(name)) optionValues.set(name, new Map());
-    optionValues.get(name).set(normalizeValue(attribute.value), attribute.value);
+    optionValues.get(name).set(
+      normalizeValue(attribute.value),
+      getAttributeLabel(product, name, attribute.value),
+    );
   }));
   const attributes = ['talle', 'color']
     .filter((name) => optionValues.has(name))
@@ -312,6 +335,13 @@ function setOptionQuantity(value, stock, available) {
 
 function normalizeName(value = '') {
   return value.replace(/^pa_/, '').replace(/[-_]/g, ' ').trim().toLowerCase();
+}
+
+function getAttributeLabel(product, name, value) {
+  const normalizedValue = normalizeValue(value);
+  const terms = product.attributes.find((attribute) => normalizeName(attribute.name) === name)?.terms || [];
+  return terms.find((term) => normalizeValue(term.slug || term.name) === normalizedValue
+    || normalizeValue(term.name) === normalizedValue)?.name || value;
 }
 
 function normalizeValue(value = '') {

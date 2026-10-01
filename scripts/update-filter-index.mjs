@@ -6,6 +6,13 @@ const ATTRIBUTE_KEYS = new Map([
   ['pa_talle', 'size'],
   ['pa_color', 'color'],
 ]);
+const VARIATION_ATTRIBUTE_KEYS = new Map([
+  ['marca', 'brand'],
+  ['talle', 'size'],
+  ['color', 'color'],
+  ['brand', 'brand'],
+  ['size', 'size'],
+]);
 
 async function requestJson(url) {
   const response = await fetch(url);
@@ -17,7 +24,7 @@ async function loadProducts(params) {
   params.set('per_page', '100');
   params.set('page', '1');
   params.set('stock_status', 'instock');
-  params.set('_fields', 'id,name,sku,attributes,is_in_stock');
+  params.set('_fields', 'id,name,sku,type,attributes,variations,is_in_stock');
 
   const firstResponse = await requestJson(`${STORE_API}/products?${params}`);
   const totalPages = Math.max(1, Number(firstResponse.headers.get('x-wp-totalpages')) || 1);
@@ -34,20 +41,58 @@ async function loadProducts(params) {
 }
 
 function normalizeProduct(product, terms) {
-  const attributes = {};
+  const productTerms = {};
   (product.attributes || []).forEach((attribute) => {
     const key = ATTRIBUTE_KEYS.get(attribute.taxonomy);
-    if (!key) return;
-    attributes[key] = attribute.terms.map(({ name, slug }) => {
-      terms[key][slug] = name;
-      return slug;
+    if (key) productTerms[key] = attribute.terms || [];
+  });
+  const attributes = { brand: [], size: [], color: [] };
+  const variations = product.variations || [];
+  const combinations = [];
+  if (product.type === 'variable') {
+    (productTerms.brand || []).forEach(({ name, slug }) => {
+      attributes.brand.push(slug);
+      terms.brand[slug] = name;
     });
+    variations.forEach((variation) => {
+      const variationAttributes = {};
+      (variation.attributes || []).forEach(({ name, value }) => {
+        const normalizedName = name.replace(/^pa_/, '').replace(/[-_]/g, ' ').trim().toLowerCase();
+        const key = VARIATION_ATTRIBUTE_KEYS.get(normalizedName);
+        if (!key) return;
+        const term = productTerms[key]?.find(({ name: termName, slug }) =>
+          slug === value || termName.toLocaleLowerCase('es') === value.toLocaleLowerCase('es'));
+        const slug = term?.slug || value.toLowerCase().replace(/\s+/g, '-');
+        if (slug) {
+          variationAttributes[key] = slug;
+          terms[key][slug] = term?.name || value;
+        }
+      });
+      Object.entries(variationAttributes).forEach(([key, slug]) => {
+        attributes[key].push(slug);
+      });
+      if (variationAttributes.size || variationAttributes.color) combinations.push({
+        ...(variationAttributes.size ? { size: variationAttributes.size } : {}),
+        ...(variationAttributes.color ? { color: variationAttributes.color } : {}),
+      });
+    });
+  } else {
+    Object.entries(productTerms).forEach(([key, productAttributeTerms]) => {
+      productAttributeTerms.forEach(({ name, slug }) => {
+        attributes[key].push(slug);
+        terms[key][slug] = name;
+      });
+    });
+  }
+  Object.entries(attributes).forEach(([key, values]) => {
+    attributes[key] = [...new Set(values)];
   });
   return {
     id: product.id,
     search: `${product.name} ${product.sku || ''}`.toLocaleLowerCase('es'),
     categories: [],
     attributes,
+    combinations: product.type === 'variable' ? combinations : null,
   };
 }
 
