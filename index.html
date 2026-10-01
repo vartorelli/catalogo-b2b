@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Catálogo mayorista para revendedores" />
+    <title>Catálogo mayorista</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="./" aria-label="Inicio">CATÁLOGO <span>MAYORISTA</span></a>
+        <button class="order-list-button" id="order-list-button" type="button" aria-label="Ver lista de pedido, 0 productos">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 6H20M8 12H20M8 18H20M4 6h.01M4 12h.01M4 18h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
+          <span>Lista</span>
+          <span class="order-badge" id="order-badge" hidden>0</span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="catalog-section container app-view" id="catalogo">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Lista de pedido</p>
+            <h1>Catálogo</h1>
+          </div>
+          <p id="result-count" class="result-count"></p>
+        </div>
+        <div class="catalog-toolbar">
+          <form class="search-wrap" id="search-form">
+            <label class="sr-only" for="search">Buscar productos</label>
+            <input id="search" type="search" placeholder="Buscar productos..." autocomplete="off" />
+            <button class="search-submit" type="submit" aria-label="Buscar">⌕</button>
+            <button class="search-clear" id="search-clear" type="button" aria-label="Limpiar búsqueda" hidden>×</button>
+          </form>
+        </div>
+        <div class="attribute-filters" aria-label="Filtros de producto">
+          <label>Marca<select id="brand-filter"><option value="">Todas las marcas</option></select></label>
+          <label>Talle<select id="size-filter"><option value="">Todos los talles</option></select></label>
+          <label>Color<select id="color-filter"><option value="">Todos los colores</option></select></label>
+        </div>
+        <div id="category-list" class="category-list" aria-label="Filtrar por categoría"></div>
+        <div id="status" class="status" role="status">Cargando catálogo...</div>
+        <div id="product-grid" class="product-grid"></div>
+        <div class="pagination" id="pagination"></div>
+      </section>
+      <section class="order-page container app-view" id="pedido" aria-live="polite" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Tu selección</p>
+            <h1>Lista de pedido</h1>
+          </div>
+          <p id="order-count">0 productos seleccionados</p>
+        </div>
+        <div class="order-page-actions">
+          <button class="button button-light" id="back-catalog" type="button">← Volver al catálogo</button>
+          <button class="button button-dark" id="print-order" type="button">Generar PDF</button>
+        </div>
+        <div class="order-items order-page-items" id="order-items"></div>
+        <div class="empty-order" id="empty-order">Todavía no seleccionaste productos.</div>
+      </section>
+    </main>
+    <dialog id="options-dialog" class="product-dialog">
+      <button class="dialog-close" id="dialog-close" type="button" aria-label="Cerrar">×</button>
+      <div id="options-content"></div>
+    </dialog>
+    <footer><div class="container">Catálogo mayorista <span>•</span> Seleccioná productos y cantidades</div></footer>
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <span id="toast-message"></span>
+      <button id="toast-view-order" type="button">Ir a ver pedidos</button>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
