@@ -138,13 +138,13 @@ function updateOrder(product, rawQuantity, options = '', variationId = '') {
 
 async function updateAttributeFilters() {
   const category = state.category;
-  const cacheKey = String(category);
+  const cacheKey = 'global';
   $('#filter-status span').textContent = 'Cargando filtros...';
   $('#retry-filters').hidden = true;
   $('#filter-status').hidden = false;
   let productsPromise = attributeFilterCache.get(cacheKey);
   if (!productsPromise) {
-    productsPromise = fetch(apiUrl({ resource: 'filters', category }))
+    productsPromise = fetch(apiUrl({ resource: 'filters' }))
       .then((response) => {
         if (!response.ok) throw new Error('Error al consultar los atributos del catálogo');
         return response.json();
@@ -358,7 +358,7 @@ $('#search-clear').addEventListener('click', () => {
   $('#search').focus();
 });
 $('#retry-filters').addEventListener('click', () => {
-  attributeFilterCache.delete(String(state.category));
+  attributeFilterCache.delete('global');
   updateAttributeFilters().catch((error) => {
     console.error('No se pudieron cargar los filtros de producto', error);
     $('#filter-status span').textContent = 'No se pudieron cargar los filtros. Podés volver a intentarlo.';

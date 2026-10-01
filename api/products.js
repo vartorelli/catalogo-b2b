@@ -4,6 +4,8 @@ const CACHE_TTL = 5 * 60 * 1000;
 const FILTER_CACHE_TTL = 60 * 60 * 1000;
 const responseCache = new Map();
 const variationCache = new Map();
+let sharedFilterTerms;
+let sharedFilterTermsExpiresAt = 0;
 
 export default async function handler(request, response) {
   const url = new URL(request.url, `https://${request.headers.host}`);
@@ -23,7 +25,9 @@ export default async function handler(request, response) {
   const headers = useAuthenticatedApi
     ? { Authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}` }
     : {};
-  const cacheKey = `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}${url.search}`;
+  const cacheKey = requestedResource === 'filters'
+    ? `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}:filters`
+    : `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}${url.search}`;
   const cachedResponse = responseCache.get(cacheKey);
   if (cachedResponse && cachedResponse.expiresAt > Date.now()) {
     response.setHeader('Cache-Control', requestedResource === 'filters'
@@ -34,6 +38,26 @@ export default async function handler(request, response) {
     return;
   }
   if (requestedResource === 'filters') {
+    if (useAuthenticatedApi) {
+      if (!sharedFilterTerms || sharedFilterTermsExpiresAt <= Date.now()) {
+        sharedFilterTerms = loadAttributeTerms(headers);
+        sharedFilterTermsExpiresAt = Date.now() + FILTER_CACHE_TTL;
+      }
+      let result;
+      try {
+        result = await sharedFilterTerms;
+      } catch (error) {
+        sharedFilterTerms = undefined;
+        sharedFilterTermsExpiresAt = 0;
+        console.error('No se pudieron cargar los términos de atributos de WooCommerce', error);
+        response.status(502).json({ error: 'No se pudieron cargar los filtros de productos' });
+        return;
+      }
+      response.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+      responseCache.set(cacheKey, { data: result, headers: {}, expiresAt: Date.now() + FILTER_CACHE_TTL });
+      response.status(200).json(result);
+      return;
+    }
     const filterParams = new URLSearchParams({ page: '1', per_page: '100', stock_status: 'instock', _fields: 'attributes' });
     const category = url.searchParams.get('category');
     if (category && category !== '0') filterParams.set('category', category);
@@ -198,6 +222,51 @@ export default async function handler(request, response) {
   });
   responseCache.set(cacheKey, { data: products, headers: headersToCache, expiresAt: Date.now() + CACHE_TTL });
   response.status(200).json(products);
+}
+
+async function loadAttributeTerms(headers) {
+  const response = await fetch(`${WC_API}/products/attributes?per_page=100`, { headers });
+  if (!response.ok) {
+    throw new Error(`No se pudieron consultar los atributos de WooCommerce (HTTP ${response.status})`);
+  }
+  const attributes = await response.json();
+  const taxonomies = [
+    { taxonomy: 'pa_marca', name: 'Marca' },
+    { taxonomy: 'pa_talle', name: 'Talle' },
+    { taxonomy: 'pa_color', name: 'Color' },
+  ];
+  const selectedAttributes = taxonomies.map(({ taxonomy, name }) => {
+    const attribute = attributes.find((item) => item.slug === taxonomy);
+    if (!attribute) throw new Error(`No existe el atributo requerido ${taxonomy}`);
+    return { ...attribute, name };
+  });
+  const normalizedAttributes = await Promise.all(selectedAttributes.map(async (attribute) => {
+    const termsUrl = `${WC_API}/products/attributes/${attribute.id}/terms`;
+    const firstPageUrl = `${termsUrl}?per_page=100&page=1`;
+    const firstPageResponse = await fetch(firstPageUrl, { headers });
+    if (!firstPageResponse.ok) {
+      throw new Error(`No se pudieron consultar los términos de ${attribute.name} (HTTP ${firstPageResponse.status})`);
+    }
+    const firstPageTerms = await firstPageResponse.json();
+    const totalPages = Math.max(1, Number(firstPageResponse.headers.get('x-wp-totalpages')) || 1);
+    let allTerms = firstPageTerms;
+    if (totalPages > 1) {
+      const pageResponses = await Promise.all(Array.from({ length: totalPages - 1 }, (_, index) => index + 2).map((page) => (
+        fetch(`${termsUrl}?per_page=100&page=${page}`, { headers })
+      )));
+      const failedResponse = pageResponses.find((pageResponse) => !pageResponse.ok);
+      if (failedResponse) {
+        throw new Error(`No se pudieron cargar todos los términos de ${attribute.name} (HTTP ${failedResponse.status})`);
+      }
+      const remainingTerms = await Promise.all(pageResponses.map((pageResponse) => pageResponse.json()));
+      allTerms = allTerms.concat(...remainingTerms);
+    }
+    return {
+      name: attribute.name,
+      terms: allTerms.map(({ name, slug }) => ({ name, slug })),
+    };
+  }));
+  return [{ attributes: normalizedAttributes }];
 }
 
 async function normalizeProduct({ id, name, sku, slug, type, description, short_description, images, categories, attributes = [], variations = [], is_in_stock, stock_quantity, stock_status }, headers, authenticated) {
