@@ -104,6 +104,29 @@ async function loadProducts() {
   if (state.size) params.size = state.size;
   if (state.color) params.color = state.color;
   try {
+    if (state.brand || state.size || state.color) {
+      const index = await loadFilterIndex();
+      if (requestId !== productsRequestId) return;
+      const selectedFilters = [
+        { key: 'brand', selected: state.brand },
+        { key: 'size', selected: state.size },
+        { key: 'color', selected: state.color },
+      ].filter((filter) => filter.selected);
+      const matchingIds = index.products
+        .filter((product) => (!state.category || product.categories.includes(state.category))
+          && (!state.search || product.search.includes(state.search.trim().toLocaleLowerCase('es')))
+          && matchesAvailableOptions(product, selectedFilters))
+        .map((product) => product.id);
+      if (matchingIds.length === 0) {
+        state.products = [];
+        state.totalPages = 1;
+        $('#result-count').textContent = '0 productos';
+        renderProducts([]);
+        renderPagination();
+        return;
+      }
+      params.include = matchingIds.join(',');
+    }
     const response = await fetch(apiUrl(params));
     if (!response.ok) throw new Error(`Error al consultar el catálogo (HTTP ${response.status})`);
     const products = await response.json();
@@ -136,18 +159,7 @@ async function updateAttributeFilters() {
   $('#retry-filters').hidden = true;
   $('#filter-status').hidden = false;
   try {
-    if (!filterIndexPromise) {
-      filterIndexPromise = fetch('./filter-index.json')
-        .then((response) => {
-          if (!response.ok) throw new Error(`No se pudo cargar el índice de filtros (HTTP ${response.status})`);
-          return response.json();
-        })
-        .catch((error) => {
-          filterIndexPromise = undefined;
-          throw error;
-        });
-    }
-    const index = await filterIndexPromise;
+    const index = await loadFilterIndex();
     if (requestId !== attributeFilterRequestId) return;
     renderAttributeFilters(index);
     $('#filter-status').hidden = true;
@@ -158,6 +170,21 @@ async function updateAttributeFilters() {
     $('#retry-filters').hidden = false;
     $('#filter-status').hidden = false;
   }
+}
+
+function loadFilterIndex() {
+  if (!filterIndexPromise) {
+    filterIndexPromise = fetch('./filter-index.json')
+      .then((response) => {
+        if (!response.ok) throw new Error(`No se pudo cargar el índice de filtros (HTTP ${response.status})`);
+        return response.json();
+      })
+      .catch((error) => {
+        filterIndexPromise = undefined;
+        throw error;
+      });
+  }
+  return filterIndexPromise;
 }
 
 function renderAttributeFilters(index) {

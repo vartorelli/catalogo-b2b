@@ -67,11 +67,21 @@ export default async function handler(request, response) {
       if (value) filteredParams.set(key, value);
     });
     filteredParams.set('stock_status', 'instock');
-    filteredParams.set('attribute_relation', 'and');
-    selectedAttributes.forEach(({ key, slug }, index) => {
-      filteredParams.set(`attributes[${index}][attribute]`, slug);
-      filteredParams.set(`attributes[${index}][slug]`, url.searchParams.get(key));
-    });
+    const include = url.searchParams.get('include');
+    if (include) {
+      const productIds = include.split(',').filter((id) => /^[1-9]\d*$/.test(id));
+      if (productIds.length === 0) {
+        response.status(400).json({ error: 'La lista de productos filtrados no es válida' });
+        return;
+      }
+      filteredParams.set('include', productIds.join(','));
+    } else {
+      filteredParams.set('attribute_relation', 'and');
+      selectedAttributes.forEach(({ key, slug }, index) => {
+        filteredParams.set(`attributes[${index}][attribute]`, slug);
+        filteredParams.set(`attributes[${index}][slug]`, url.searchParams.get(key));
+      });
+    }
     const filteredResponse = await fetch(`${STORE_API}/products?${filteredParams}`);
     if (!filteredResponse.ok) {
       response.status(filteredResponse.status).json({ error: 'No se pudieron filtrar los productos' });
