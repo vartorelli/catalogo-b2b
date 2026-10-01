@@ -35,6 +35,29 @@ export default async function handler(request, response) {
     response.status(200).json(cachedResponse.data);
     return;
   }
+  if (requestedResource === 'variations') {
+    const productId = url.searchParams.get('product_id') || '';
+    if (!/^[1-9]\d*$/.test(productId)) {
+      response.status(400).json({ error: 'El identificador del producto no es válido' });
+      return;
+    }
+    if (!useAuthenticatedApi) {
+      response.status(503).json({ error: 'No están disponibles las opciones de este producto' });
+      return;
+    }
+    let variations;
+    try {
+      variations = await loadVariations(productId, headers);
+    } catch (error) {
+      console.error(`No se pudieron cargar las opciones del producto ${productId}`, error);
+      response.status(502).json({ error: 'No se pudieron cargar las opciones de este producto' });
+      return;
+    }
+    response.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+    responseCache.set(cacheKey, { data: variations, headers: {}, expiresAt: Date.now() + CACHE_TTL });
+    response.status(200).json(variations);
+    return;
+  }
   if (requestedResource === 'filters') {
     const filterParams = new URLSearchParams({ page: '1', per_page: '100', stock_status: 'instock', _fields: 'attributes' });
     const filterResponse = await fetch(`${apiBase}/products?${filterParams}`, { headers });
@@ -104,29 +127,7 @@ export default async function handler(request, response) {
     response.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
     response.setHeader('x-wp-total', total);
     response.setHeader('x-wp-totalpages', totalPages);
-    let products;
-    if (useAuthenticatedApi && filteredProducts.length > 0) {
-      const includeParams = new URLSearchParams({
-        include: filteredProducts.map(({ id }) => id).join(','),
-        per_page: String(filteredProducts.length),
-        orderby: 'include',
-        stock_status: 'instock',
-      });
-      const productResponse = await fetch(`${WC_API}/products?${includeParams}`, { headers });
-      if (!productResponse.ok) {
-        response.status(productResponse.status).json({ error: 'No se pudieron cargar los productos filtrados' });
-        return;
-      }
-      const productData = await productResponse.json();
-      const orderedProducts = new Map(productData.map((product) => [product.id, product]));
-      products = await Promise.all(filteredProducts
-        .map(({ id }) => orderedProducts.get(id))
-        .filter(Boolean)
-        .map((product) => normalizeProduct(product, headers, true)));
-      products = products.filter((product) => product.is_in_stock);
-    } else {
-      products = await Promise.all(filteredProducts.map((product) => normalizeProduct(product, headers, false)));
-    }
+    const products = await Promise.all(filteredProducts.map((product) => normalizeProduct(product, headers, false, useAuthenticatedApi)));
     responseCache.set(cacheKey, {
       data: products,
       headers: { 'x-wp-total': total, 'x-wp-totalpages': totalPages },
@@ -200,7 +201,7 @@ export default async function handler(request, response) {
   response.status(200).json(products);
 }
 
-async function normalizeProduct({ id, name, sku, slug, type, description, short_description, images, categories, attributes = [], variations = [], is_in_stock, stock_quantity, stock_status }, headers, authenticated) {
+async function normalizeProduct({ id, name, sku, slug, type, description, short_description, images, categories, attributes = [], variations = [], is_in_stock, stock_quantity, stock_status }, headers, authenticated, lazyVariations = false) {
   const normalizedVariations = authenticated ? await loadVariations(id, headers) : variations;
   const hasAvailableVariation = normalizedVariations.some((variation) => variation.is_in_stock);
   const hasAvailableStock = stock_status === 'instock'
@@ -214,6 +215,7 @@ async function normalizeProduct({ id, name, sku, slug, type, description, short_
         : options.map((option) => ({ name: option, slug: option.toLowerCase().replace(/\s+/g, '-') })),
     })),
     variations: normalizedVariations,
+    variations_loaded: !lazyVariations || type !== 'variable',
     is_in_stock: authenticated && type === 'variable'
       ? normalizedVariations.length > 0 && hasAvailableVariation
       : (authenticated ? hasAvailableStock : is_in_stock),

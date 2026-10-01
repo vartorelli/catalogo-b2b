@@ -196,8 +196,27 @@ function refreshAttributeFilters() {
     });
 }
 
-function openOptions(product) {
+async function openOptions(product) {
   state.activeProduct = product;
+  if (product.variations_loaded === false) {
+    $('#options-content').innerHTML = '<div class="dialog-copy"><p class="eyebrow">Cargando</p><h2>Buscando opciones disponibles…</h2></div>';
+    if (!$('#options-dialog').open) $('#options-dialog').showModal();
+    try {
+      const response = await fetch(apiUrl({ resource: 'variations', product_id: product.id }));
+      if (!response.ok) throw new Error(`Error al cargar las opciones (HTTP ${response.status})`);
+      const variations = await response.json();
+      if (!variations.length) throw new Error('No se encontraron opciones disponibles para este producto');
+      if (state.activeProduct !== product) return;
+      product.variations = variations;
+      product.variations_loaded = true;
+    } catch (error) {
+      console.error('No se pudieron cargar las opciones del producto', error);
+      if (state.activeProduct !== product) return;
+      $('#options-content').innerHTML = '<div class="dialog-copy"><p class="eyebrow">No disponible</p><h2>No se pudieron cargar las opciones.</h2><p>Revisá tu conexión e intentá nuevamente.</p><button class="button button-dark" id="retry-options" type="button">Reintentar</button></div>';
+      $('#retry-options').addEventListener('click', () => openOptions(product));
+      return;
+    }
+  }
   const availableVariations = product.variations.filter((variation) => variation.is_in_stock === true);
   const optionValues = new Map();
   availableVariations.forEach((variation) => variation.attributes.forEach((attribute) => {
