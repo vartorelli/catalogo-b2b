@@ -2,7 +2,8 @@ const state = { page: 1, category: 0, search: '', brand: '', size: '', color: ''
 const $ = (selector) => document.querySelector(selector);
 const apiUrl = (params) => `/api/products?${new URLSearchParams(params)}`;
 const attributeFilterCache = new Map();
-let filterRefreshPromise;
+let globalAttributeFiltersPromise;
+let attributeFilterRequestId = 0;
 let productsRequestId = 0;
 
 function cleanText(value = '') {
@@ -94,14 +95,7 @@ function renderPagination() {
 
 async function loadProducts() {
   const requestId = ++productsRequestId;
-  const filterCategory = state.category;
-  updateAttributeFilters().catch((error) => {
-    console.error('No se pudieron cargar los filtros de producto', error);
-    if (filterCategory !== state.category) return;
-    $('#filter-status span').textContent = 'No se pudieron cargar los filtros. Podés volver a intentarlo.';
-    $('#retry-filters').hidden = false;
-    $('#filter-status').hidden = false;
-  });
+  updateAttributeFilters();
   $('#status').textContent = 'Cargando catálogo...';
   $('#status').hidden = false;
   const params = { page: state.page, per_page: 16 };
@@ -138,62 +132,74 @@ function updateOrder(product, rawQuantity, options = '', variationId = '') {
 }
 
 async function updateAttributeFilters() {
-  const category = state.category;
-  const cacheKey = 'global';
-  $('#filter-status span').textContent = 'Cargando filtros...';
+  const requestId = ++attributeFilterRequestId;
+  const params = { resource: 'filters' };
+  if (state.category) params.category = state.category;
+  if (state.search) params.search = state.search;
+  if (state.brand) params.brand = state.brand;
+  if (state.size) params.size = state.size;
+  if (state.color) params.color = state.color;
+  const cacheKey = new URLSearchParams(params).toString();
+  const hasContext = Boolean(state.category || state.search || state.brand || state.size || state.color);
+  $('#filter-status span').textContent = hasContext
+    ? 'Actualizando filtros para esta selección...'
+    : 'Cargando filtros...';
   $('#retry-filters').hidden = true;
   $('#filter-status').hidden = false;
-  let productsPromise = attributeFilterCache.get(cacheKey);
-  if (!productsPromise) {
-    productsPromise = fetch('./filter-options.json')
-      .then((response) => {
-        if (!response.ok) throw new Error(`No se pudo cargar la caché de filtros (HTTP ${response.status})`);
-        return response.json();
-      });
-    attributeFilterCache.set(cacheKey, productsPromise);
-  }
-  let products;
   try {
-    products = await productsPromise;
+    if (!globalAttributeFiltersPromise) {
+      globalAttributeFiltersPromise = fetch('./filter-options.json')
+        .then((response) => {
+          if (!response.ok) throw new Error(`No se pudo cargar la caché de filtros (HTTP ${response.status})`);
+          return response.json();
+        })
+        .catch((error) => {
+          globalAttributeFiltersPromise = undefined;
+          throw error;
+        });
+    }
+    const globalProducts = await globalAttributeFiltersPromise;
+    if (requestId !== attributeFilterRequestId) return;
+    if (!hasContext) renderAttributeFilters(globalProducts);
+
+    let productsPromise = attributeFilterCache.get(cacheKey);
+    if (!productsPromise) {
+      productsPromise = fetch(apiUrl(params))
+        .then((response) => {
+          if (!response.ok) throw new Error(`Error al actualizar los filtros (HTTP ${response.status})`);
+          return response.json();
+        });
+      attributeFilterCache.set(cacheKey, productsPromise);
+    }
+    let products;
+    try {
+      products = await productsPromise;
+    } catch (error) {
+      if (attributeFilterCache.get(cacheKey) === productsPromise) attributeFilterCache.delete(cacheKey);
+      throw error;
+    }
+    if (requestId !== attributeFilterRequestId) return;
+    renderAttributeFilters(products);
+    $('#filter-status').hidden = true;
   } catch (error) {
-    if (attributeFilterCache.get(cacheKey) === productsPromise) attributeFilterCache.delete(cacheKey);
-    throw error;
+    if (requestId !== attributeFilterRequestId) return;
+    console.error('No se pudieron cargar los filtros de producto', error);
+    $('#filter-status span').textContent = 'No se pudieron actualizar los filtros. Podés volver a intentarlo.';
+    $('#retry-filters').hidden = false;
+    $('#filter-status').hidden = false;
   }
-  if (category !== state.category) return;
-  renderAttributeFilters(products);
-  $('#filter-status').hidden = true;
-  refreshAttributeFilters();
 }
 
 function renderAttributeFilters(products) {
   [['brand-filter', 'Marca', state.brand], ['size-filter', 'Talle', state.size], ['color-filter', 'Color', state.color]].forEach(([id, name, selected]) => {
     const select = $(`#${id}`);
+    const selectedLabel = [...select.options].find((option) => option.value === selected)?.textContent;
     const values = new Map();
     products.forEach((product) => product.attributes.filter((attribute) => attribute.name === name).forEach((attribute) => attribute.terms.forEach((term) => values.set(term.slug, term.name))));
+    if (selected && !values.has(selected)) values.set(selected, selectedLabel || selected);
     select.innerHTML = `<option value="">${name === 'Marca' ? 'Todas las marcas' : name === 'Talle' ? 'Todos los talles' : 'Todos los colores'}</option>${[...values].sort((a, b) => a[1].localeCompare(b[1], 'es')).map(([slug, label]) => `<option value="${slug}">${label}</option>`).join('')}`;
     select.value = selected;
   });
-}
-
-function refreshAttributeFilters() {
-  if (filterRefreshPromise) return;
-  filterRefreshPromise = fetch(apiUrl({ resource: 'filters' }))
-    .then((response) => {
-      if (!response.ok) throw new Error(`Error al actualizar los filtros (HTTP ${response.status})`);
-      return response.json();
-    })
-    .then((products) => {
-      attributeFilterCache.set('global', Promise.resolve(products));
-      renderAttributeFilters(products);
-      $('#filter-status').hidden = true;
-    })
-    .catch((error) => {
-      filterRefreshPromise = undefined;
-      console.error('No se pudieron actualizar los filtros guardados', error);
-      $('#filter-status span').textContent = 'Usando filtros guardados; no se pudieron actualizar.';
-      $('#retry-filters').hidden = false;
-      $('#filter-status').hidden = false;
-    });
 }
 
 async function openOptions(product) {
@@ -404,14 +410,7 @@ $('#search-clear').addEventListener('click', () => {
   $('#search').focus();
 });
 $('#retry-filters').addEventListener('click', () => {
-  attributeFilterCache.delete('global');
-  filterRefreshPromise = undefined;
-  updateAttributeFilters().catch((error) => {
-    console.error('No se pudieron cargar los filtros de producto', error);
-    $('#filter-status span').textContent = 'No se pudieron cargar los filtros. Podés volver a intentarlo.';
-    $('#retry-filters').hidden = false;
-    $('#filter-status').hidden = false;
-  });
+  updateAttributeFilters();
 });
 [['brand-filter', 'brand'], ['size-filter', 'size'], ['color-filter', 'color']].forEach(([id, key]) => $(`#${id}`).addEventListener('change', (event) => {
   state[key] = event.target.value;

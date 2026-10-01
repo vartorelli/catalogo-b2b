@@ -23,9 +23,7 @@ export default async function handler(request, response) {
   const headers = useAuthenticatedApi
     ? { Authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}` }
     : {};
-  const cacheKey = requestedResource === 'filters'
-    ? `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}:filters`
-    : `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}${url.search}`;
+  const cacheKey = `${useAuthenticatedApi ? 'private' : 'public'}:${url.pathname}${url.search}`;
   const cachedResponse = responseCache.get(cacheKey);
   if (cachedResponse && cachedResponse.expiresAt > Date.now()) {
     response.setHeader('Cache-Control', requestedResource === 'filters'
@@ -59,44 +57,15 @@ export default async function handler(request, response) {
     return;
   }
   if (requestedResource === 'filters') {
-    const filterParams = new URLSearchParams({ page: '1', per_page: '100', stock_status: 'instock', _fields: 'attributes' });
-    const filterResponse = await fetch(`${apiBase}/products?${filterParams}`, { headers });
-    if (!filterResponse.ok) {
-      response.status(filterResponse.status).json({ error: 'No se pudieron cargar los filtros' });
-      return;
+    try {
+      const result = await loadScopedFilterOptions(url);
+      response.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+      responseCache.set(cacheKey, { data: result, headers: {}, expiresAt: Date.now() + FILTER_CACHE_TTL });
+      response.status(200).json(result);
+    } catch (error) {
+      console.error('No se pudieron cargar los filtros para la selección actual', error);
+      response.status(502).json({ error: 'No se pudieron cargar los filtros para la selección actual' });
     }
-    const filterProducts = await filterResponse.json();
-    const totalPages = Math.max(1, Number(filterResponse.headers.get('x-wp-totalpages')) || 1);
-    if (totalPages > 1) {
-      const pageResponses = await Promise.all(Array.from({ length: totalPages - 1 }, (_, index) => index + 2).map((page) => {
-        const params = new URLSearchParams(filterParams);
-        params.set('page', String(page));
-        return fetch(`${apiBase}/products?${params}`, { headers });
-      }));
-      const failedResponse = pageResponses.find((pageResponse) => !pageResponse.ok);
-      if (failedResponse) {
-        response.status(failedResponse.status).json({ error: 'No se pudieron cargar todos los atributos de los productos' });
-        return;
-      }
-      const pageProducts = await Promise.all(pageResponses.map((pageResponse) => pageResponse.json()));
-      filterProducts.push(...pageProducts.flat());
-    }
-    response.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
-    const attributeValues = new Map();
-    filterProducts.forEach(({ attributes = [] }) => {
-      attributes.forEach(({ name, terms = [], options = [] }) => {
-        if (!attributeValues.has(name)) attributeValues.set(name, new Map());
-        const values = terms.length
-          ? terms.map(({ name: termName, slug }) => ({ name: termName, slug }))
-          : options.map((option) => ({ name: option, slug: option.toLowerCase().replace(/\s+/g, '-') }));
-        values.forEach((term) => attributeValues.get(name).set(term.slug, term));
-      });
-    });
-    const result = [{
-      attributes: [...attributeValues].map(([name, values]) => ({ name, terms: [...values.values()] })),
-    }];
-    responseCache.set(cacheKey, { data: result, headers: {}, expiresAt: Date.now() + FILTER_CACHE_TTL });
-    response.status(200).json(result);
     return;
   }
   const selectedAttributes = [
@@ -199,6 +168,86 @@ export default async function handler(request, response) {
   });
   responseCache.set(cacheKey, { data: products, headers: headersToCache, expiresAt: Date.now() + CACHE_TTL });
   response.status(200).json(products);
+}
+
+const FILTER_ATTRIBUTES = [
+  { key: 'brand', slug: 'pa_marca', name: 'Marca' },
+  { key: 'size', slug: 'pa_talle', name: 'Talle' },
+  { key: 'color', slug: 'pa_color', name: 'Color' },
+];
+
+async function loadScopedFilterOptions(url) {
+  const matchingProducts = new Map();
+  const getMatchingProducts = async (excludedFilter) => {
+    const params = new URLSearchParams({
+      page: '1',
+      per_page: '100',
+      stock_status: 'instock',
+    });
+    ['category', 'search'].forEach((key) => {
+      const value = url.searchParams.get(key);
+      if (value) params.set(key, value);
+    });
+    const selectedAttributes = FILTER_ATTRIBUTES.filter(({ key }) =>
+      key !== excludedFilter && url.searchParams.get(key));
+    if (selectedAttributes.length > 0) {
+      params.set('attribute_relation', 'and');
+      selectedAttributes.forEach(({ key, slug }, index) => {
+        params.set(`attributes[${index}][attribute]`, slug);
+        params.set(`attributes[${index}][slug]`, url.searchParams.get(key));
+      });
+    }
+    const cacheKey = params.toString();
+    if (!matchingProducts.has(cacheKey)) {
+      matchingProducts.set(cacheKey, fetchAllMatchingProducts(params));
+    }
+    return matchingProducts.get(cacheKey);
+  };
+
+  const attributes = await Promise.all(FILTER_ATTRIBUTES.map(async ({ key, name }) => {
+    const products = await getMatchingProducts(key);
+    const terms = new Map();
+    products.forEach(({ attributes: productAttributes = [] }) => {
+      productAttributes.forEach((attribute) => {
+        if (getFilterAttributeKey(attribute) !== key) return;
+        const values = attribute.terms?.length
+          ? attribute.terms.map(({ name: termName, slug }) => ({ name: termName, slug }))
+          : (attribute.options || []).map((option) => ({ name: option, slug: normalizeAttributeValue(option) }));
+        values.forEach((term) => {
+          if (term.slug) terms.set(term.slug, term);
+        });
+      });
+    });
+    return { name, terms: [...terms.values()] };
+  }));
+
+  return [{ attributes }];
+}
+
+async function fetchAllMatchingProducts(params) {
+  const firstResponse = await fetch(`${STORE_API}/products?${params}`);
+  if (!firstResponse.ok) throw new Error(`Error HTTP ${firstResponse.status} al consultar productos para los filtros`);
+  const products = await firstResponse.json();
+  const totalPages = Math.max(1, Number(firstResponse.headers.get('x-wp-totalpages')) || 1);
+  if (totalPages === 1) return products;
+
+  const pageResponses = await Promise.all(Array.from({ length: totalPages - 1 }, (_, index) => {
+    const pageParams = new URLSearchParams(params);
+    pageParams.set('page', String(index + 2));
+    return fetch(`${STORE_API}/products?${pageParams}`);
+  }));
+  const failedResponse = pageResponses.find((pageResponse) => !pageResponse.ok);
+  if (failedResponse) throw new Error(`Error HTTP ${failedResponse.status} al completar los productos para los filtros`);
+  const remainingProducts = await Promise.all(pageResponses.map((pageResponse) => pageResponse.json()));
+  return products.concat(...remainingProducts);
+}
+
+function getFilterAttributeKey(attribute) {
+  const name = normalizeAttributeName(attribute.taxonomy || attribute.name);
+  if (name === 'pa marca' || name === 'marca' || name === 'brand') return 'brand';
+  if (name === 'pa talle' || name === 'talle' || name === 'size') return 'size';
+  if (name === 'pa color' || name === 'color') return 'color';
+  return '';
 }
 
 async function normalizeProduct({ id, name, sku, slug, type, description, short_description, images, categories, attributes = [], variations = [], is_in_stock, stock_quantity, stock_status }, headers, authenticated, lazyVariations = false) {
