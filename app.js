@@ -1,8 +1,7 @@
 const state = { page: 1, category: 0, search: '', brand: '', size: '', color: '', totalPages: 1, order: new Map(), products: [], activeProduct: null };
 const $ = (selector) => document.querySelector(selector);
 const apiUrl = (params) => `/api/products?${new URLSearchParams(params)}`;
-const attributeFilterCache = new Map();
-let globalAttributeFiltersPromise;
+let filterIndexPromise;
 let attributeFilterRequestId = 0;
 let productsRequestId = 0;
 
@@ -133,53 +132,24 @@ function updateOrder(product, rawQuantity, options = '', variationId = '') {
 
 async function updateAttributeFilters() {
   const requestId = ++attributeFilterRequestId;
-  const params = { resource: 'filters' };
-  if (state.category) params.category = state.category;
-  if (state.search) params.search = state.search;
-  if (state.brand) params.brand = state.brand;
-  if (state.size) params.size = state.size;
-  if (state.color) params.color = state.color;
-  const cacheKey = new URLSearchParams(params).toString();
-  const hasContext = Boolean(state.category || state.search || state.brand || state.size || state.color);
-  $('#filter-status span').textContent = hasContext
-    ? 'Actualizando filtros para esta selección...'
-    : 'Cargando filtros...';
+  $('#filter-status span').textContent = 'Cargando opciones de filtros...';
   $('#retry-filters').hidden = true;
   $('#filter-status').hidden = false;
   try {
-    if (!globalAttributeFiltersPromise) {
-      globalAttributeFiltersPromise = fetch('./filter-options.json')
+    if (!filterIndexPromise) {
+      filterIndexPromise = fetch('./filter-index.json')
         .then((response) => {
-          if (!response.ok) throw new Error(`No se pudo cargar la caché de filtros (HTTP ${response.status})`);
+          if (!response.ok) throw new Error(`No se pudo cargar el índice de filtros (HTTP ${response.status})`);
           return response.json();
         })
         .catch((error) => {
-          globalAttributeFiltersPromise = undefined;
+          filterIndexPromise = undefined;
           throw error;
         });
     }
-    const globalProducts = await globalAttributeFiltersPromise;
+    const index = await filterIndexPromise;
     if (requestId !== attributeFilterRequestId) return;
-    if (!hasContext) renderAttributeFilters(globalProducts);
-
-    let productsPromise = attributeFilterCache.get(cacheKey);
-    if (!productsPromise) {
-      productsPromise = fetch(apiUrl(params))
-        .then((response) => {
-          if (!response.ok) throw new Error(`Error al actualizar los filtros (HTTP ${response.status})`);
-          return response.json();
-        });
-      attributeFilterCache.set(cacheKey, productsPromise);
-    }
-    let products;
-    try {
-      products = await productsPromise;
-    } catch (error) {
-      if (attributeFilterCache.get(cacheKey) === productsPromise) attributeFilterCache.delete(cacheKey);
-      throw error;
-    }
-    if (requestId !== attributeFilterRequestId) return;
-    renderAttributeFilters(products);
+    renderAttributeFilters(index);
     $('#filter-status').hidden = true;
   } catch (error) {
     if (requestId !== attributeFilterRequestId) return;
@@ -190,12 +160,25 @@ async function updateAttributeFilters() {
   }
 }
 
-function renderAttributeFilters(products) {
-  [['brand-filter', 'Marca', state.brand], ['size-filter', 'Talle', state.size], ['color-filter', 'Color', state.color]].forEach(([id, name, selected]) => {
+function renderAttributeFilters(index) {
+  const products = index.products || [];
+  const filters = [
+    { id: 'brand-filter', name: 'Marca', key: 'brand', selected: state.brand },
+    { id: 'size-filter', name: 'Talle', key: 'size', selected: state.size },
+    { id: 'color-filter', name: 'Color', key: 'color', selected: state.color },
+  ];
+  filters.forEach(({ id, name, key, selected }) => {
     const select = $(`#${id}`);
     const selectedLabel = [...select.options].find((option) => option.value === selected)?.textContent;
     const values = new Map();
-    products.forEach((product) => product.attributes.filter((attribute) => attribute.name === name).forEach((attribute) => attribute.terms.forEach((term) => values.set(term.slug, term.name))));
+    const matchingProducts = products.filter((product) =>
+      (!state.category || product.categories.includes(state.category))
+      && (!state.search || product.search.includes(state.search.trim().toLocaleLowerCase('es')))
+      && filters.every((filter) => filter.key === key || !filter.selected
+        || product.attributes[filter.key]?.includes(filter.selected)));
+    matchingProducts.forEach((product) => {
+      (product.attributes[key] || []).forEach((slug) => values.set(slug, index.terms[key][slug] || slug));
+    });
     if (selected && !values.has(selected)) values.set(selected, selectedLabel || selected);
     select.innerHTML = `<option value="">${name === 'Marca' ? 'Todas las marcas' : name === 'Talle' ? 'Todos los talles' : 'Todos los colores'}</option>${[...values].sort((a, b) => a[1].localeCompare(b[1], 'es')).map(([slug, label]) => `<option value="${slug}">${label}</option>`).join('')}`;
     select.value = selected;
