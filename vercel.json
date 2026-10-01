@@ -15,12 +15,5 @@
         }
       ]
     }
-  ],
-  "functions": {
-    "api/products.js": {
-      "regions": [
-        "gru1"
-      ]
-    }
-  }
+  ]
 }
